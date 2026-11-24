@@ -49,6 +49,15 @@ rollback;
 
 begin;
 select pg_temp.as_user('11111111-1111-4111-8111-111111111111');
+\echo '-- 1f. point self at a stripe_customer_id  (EXPECT: permission denied)'
+-- Added with 20261124120006. Owning this column would mean paying with
+-- someone else's saved cards. It is non-writable only because the GRANT in
+-- 20261124120003 is an allowlist -- this asserts that stayed true.
+update public.profiles set stripe_customer_id = 'cus_attacker' where id = auth.uid();
+rollback;
+
+begin;
+select pg_temp.as_user('11111111-1111-4111-8111-111111111111');
 \echo '-- 1d. grant self a capability  (EXPECT: 0 rows / denied)'
 insert into public.profile_capabilities (user_id, capability, status)
 values (auth.uid(), 'filmer', 'active');
@@ -99,6 +108,23 @@ begin;
 select pg_temp.as_user('22222222-2222-4222-8222-222222222222');
 \echo '-- 3b. call record_payment_event directly  (EXPECT: permission denied)'
 select public.record_payment_event('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1', 'released', 'nope');
+rollback;
+
+begin;
+select pg_temp.as_user('22222222-2222-4222-8222-222222222222');
+\echo '-- 3c. filmer enables own charges  (EXPECT: UPDATE 0 / denied)'
+-- payout_accounts has a SELECT policy and no write policy, so Connect state
+-- is webhook-only. Self-enabling charges would let a filmer be booked before
+-- Stripe cleared them, and the session could never settle.
+update public.payout_accounts
+   set charges_enabled = true, payouts_enabled = true, details_submitted = true
+ where user_id = auth.uid();
+rollback;
+
+begin;
+select pg_temp.as_user('22222222-2222-4222-8222-222222222222');
+\echo '-- 3d. filmer reads own payout account  (EXPECT: 1 -- allowed)'
+select count(*) as my_payout_account from public.payout_accounts;
 rollback;
 
 \echo ''

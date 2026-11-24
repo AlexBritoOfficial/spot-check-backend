@@ -415,6 +415,21 @@ deno_version = 2
 # [edge_runtime.secrets]
 # secret_key = "env(SECRET_VALUE)"
 
+# ---------------------------------------------------------------------------
+# Functions
+# ---------------------------------------------------------------------------
+
+# Stripe calls this endpoint directly and has no idea what a Supabase JWT is,
+# so the gateway must not demand one. The Stripe-Signature header *is* the
+# authentication, verified with constructEventAsync against
+# STRIPE_WEBHOOK_SECRET -- see functions/stripe-webhook/index.ts.
+#
+# This is the one function here that is unauthenticated at the gateway. The
+# other three are left at the default verify_jwt = true, because they act on
+# behalf of a signed-in user and read their id from the token.
+[functions.stripe-webhook]
+verify_jwt = false
+
 [analytics]
 enabled = true
 port = 54327
