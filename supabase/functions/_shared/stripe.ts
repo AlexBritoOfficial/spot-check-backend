@@ -32,4 +32,25 @@ export const stripe = new Stripe(requireEnv('STRIPE_SECRET_KEY'), {
 // webhook that rejects every signature as invalid.
 export const cryptoProvider = Stripe.createSubtleCryptoProvider();
 
-export const stripeWebhookSecret = () => requireEnv('STRIPE_WEBHOOK_SECRET');
+/**
+ * Every signing secret a webhook delivery might have been signed with.
+ *
+ * There are two destinations, not one, and each has its own secret. Connect
+ * forces this: our `accounts.create({ type: 'express' })` accounts are v1 and
+ * owned directly by the platform, so their `account.updated` events are
+ * delivered to a **Connected accounts** destination, while identity, payment
+ * and payment-method events come from the **Your account** destination.
+ * Putting all twelve events on one destination silently never updates
+ * payout_accounts.
+ *
+ * The connect secret is optional so a single-destination environment still
+ * works -- but if Connect onboarding is in use and this is unset, every
+ * account.updated is rejected as an invalid signature, which looks like a
+ * signing bug rather than missing configuration.
+ */
+export const stripeWebhookSecrets = (): string[] => {
+  const secrets = [requireEnv('STRIPE_WEBHOOK_SECRET')];
+  const connect = Deno.env.get('STRIPE_WEBHOOK_SECRET_CONNECT');
+  if (connect) secrets.push(connect);
+  return secrets;
+};

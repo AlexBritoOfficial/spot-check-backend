@@ -55,6 +55,7 @@ code but can never read or write a live key:
 cat > /tmp/stripe.env <<'EOF'
 STRIPE_SECRET_KEY=sk_test_...
 STRIPE_WEBHOOK_SECRET=whsec_...
+STRIPE_WEBHOOK_SECRET_CONNECT=whsec_...
 EOF
 supabase secrets set --remote=<ref> --env-file /tmp/stripe.env --yes
 rm /tmp/stripe.env
@@ -75,37 +76,27 @@ The heredoc keeps both values out of shell history, which passing them as argume
 `CONNECT_RETURN_URL_BASE` is optional and defaults to the deployed web app. Only `pk_test_…` ever
 reaches the iOS app, via the gitignored `Config/Secrets.xcconfig`.
 
-**2. The webhook endpoint.** Create it from the CLI, which also prints the signing secret — the
-dashboard works too, but this is one command:
+**2. The event destinations — there are TWO, not one.**
 
-```sh
-stripe webhook_endpoints create \
-  --url "https://<ref>.supabase.co/functions/v1/stripe-webhook" \
-  --description "Spot Check <env>" \
-  --enabled-events identity.verification_session.verified \
-  --enabled-events identity.verification_session.requires_input \
-  --enabled-events identity.verification_session.processing \
-  --enabled-events identity.verification_session.canceled \
-  --enabled-events payment_intent.processing \
-  --enabled-events payment_intent.succeeded \
-  --enabled-events payment_intent.payment_failed \
-  --enabled-events payment_intent.canceled \
-  --enabled-events charge.refunded \
-  --enabled-events account.updated \
-  --enabled-events payment_method.attached \
-  --enabled-events payment_method.detached
-```
+Connect forces this. `accounts.create({ type: 'express' })` makes a **v1** connected account owned
+directly by the platform, and the dashboard states the routing rule plainly: v1 platform-owned
+account events go to **Connected accounts** destinations. So `account.updated` never arrives on a
+"Your account" destination, and `payout_accounts` silently never updates — no error, just a filmer
+who stays unbookable forever.
 
-`"secret"` in the response is `STRIPE_WEBHOOK_SECRET`, and it is only fully readable at creation. Do
-not pass `--api-version`: CLI 1.55.x does not offer `2026-11-18`, so the endpoint takes the account
-default. That is fine here — the handler reads only long-stable fields and re-retrieves the Identity
-session with `expand` rather than trusting the payload's shape.
+| Destination | Scope              | Events                                                            |
+| ----------- | ------------------ | ----------------------------------------------------------------- |
+| Platform    | Your account       | the 11 identity / payment_intent / charge / payment_method events |
+| Connect     | Connected accounts | `account.updated` only                                            |
 
-`<ref>.supabase.co/functions/v1/<name>` and `<ref>.functions.supabase.co/<name>` both resolve; the
-first matches what `functions serve` prints locally, so this file uses it throughout.
+Both point at the same URL: `https://<ref>.supabase.co/functions/v1/stripe-webhook`
 
-The twelve events, for reference or for the dashboard — the handler ignores anything else, but an
-endpoint that sends nothing is the usual reason state never updates:
+For both, set **Payload style: Snapshot** _before_ selecting events (switching it clears them). Thin
+payloads carry no object data, and this handler reads `event.data.object` fields directly. Set **API
+version** to `2026-11-18.endive` — the same version `_shared/stripe.ts` pins, so payload shapes
+match the code.
+
+The 11 for the platform destination:
 
 ```
 identity.verification_session.verified
@@ -117,12 +108,26 @@ payment_intent.succeeded
 payment_intent.payment_failed
 payment_intent.canceled
 charge.refunded
-account.updated
 payment_method.attached
 payment_method.detached
 ```
 
-The signing secret differs per endpoint, so Test/QA, Staging and Production each have their own.
+and `account.updated` alone on the Connect destination.
+
+**Each destination has its own signing secret**, so there are two:
+
+```sh
+STRIPE_WEBHOOK_SECRET=whsec_...          # platform destination
+STRIPE_WEBHOOK_SECRET_CONNECT=whsec_...  # connected-accounts destination
+```
+
+`stripe-webhook` tries each in turn, because nothing in the request says which destination sent it.
+The connect one is optional so a single-destination environment still works — but with Connect in
+use and it unset, every `account.updated` is rejected as an invalid signature, which reads like a
+signing bug rather than missing configuration.
+
+A signing secret is only fully readable when its destination is created, and differs per destination
+and per environment.
 
 **Also dashboard-only, with no CLI equivalent:** enabling Identity, and enabling Connect with
 Express plus the transfers capability.
