@@ -1,16 +1,36 @@
 # Edge Functions
 
-Four functions, three of them called by the iOS app and one called by Stripe.
+Five functions, four of them called by the iOS app and one called by Stripe.
 
 | Function             | Auth             | Does                                                                  |
 | -------------------- | ---------------- | --------------------------------------------------------------------- |
 | `identity-session`   | user JWT         | Starts/resumes a Stripe Identity session, returns its `client_secret` |
 | `payment-intent`     | user JWT         | PaymentIntent + ephemeral key for an existing `payments` row          |
 | `connect-onboarding` | user JWT         | Creates/refreshes a Connect **Express** account link                  |
+| `release-payment`    | user JWT         | The payer confirms receipt; transfers the payee's share               |
 | `stripe-webhook`     | Stripe signature | The **only** writer of identity, payment and Connect state            |
 
 `stripe-webhook` is the one function with `verify_jwt = false` (`supabase/config.toml`) — Stripe
 does not send a Supabase JWT, so the `Stripe-Signature` header is the authentication.
+
+## The escrow trail
+
+The canvas draws four steps (`ClipVaultScreen.swift:55-60`), and this is where each one gets
+written:
+
+| Step                | Written by                                                                        |
+| ------------------- | --------------------------------------------------------------------------------- |
+| Charged & held      | `stripe-webhook`, on `payment_intent.succeeded`                                   |
+| Both confirmed      | **not modelled yet** — a separate pair of confirmations that the session happened |
+| Raw clips delivered | `mark_payment_delivered()`, callable only by the payee                            |
+| Filmer paid         | `release-payment`, callable only by the payer                                     |
+
+The payer confirming receipt is what moves the money. A failed transfer leaves the confirmation
+recorded and the payment still `held`, so it is retryable without asking the skater to confirm
+twice.
+
+`transfer.reversed` is **not** handled by the webhook yet — a reversal would currently leave the
+`payouts` row saying `released`.
 
 ## One-time setup per environment
 

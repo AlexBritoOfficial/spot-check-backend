@@ -127,6 +127,59 @@ select pg_temp.as_user('22222222-2222-4222-8222-222222222222');
 select count(*) as my_payout_account from public.payout_accounts;
 rollback;
 
+begin;
+select pg_temp.as_user('22222222-2222-4222-8222-222222222222');
+\echo '-- 3e. payee sets own confirmed_at  (EXPECT: UPDATE 0 / denied)'
+-- The escrow release trigger. A filmer who could set this would release
+-- their own escrow without the skater ever seeing a clip.
+update public.payments set confirmed_at = now() where payee_id = auth.uid();
+rollback;
+
+begin;
+select pg_temp.as_user('22222222-2222-4222-8222-222222222222');
+\echo '-- 3f. payee sets own delivered_at directly  (EXPECT: UPDATE 0 / denied)'
+update public.payments set delivered_at = now() where payee_id = auth.uid();
+rollback;
+
+begin;
+select pg_temp.as_user('11111111-1111-4111-8111-111111111111');
+\echo '-- 3g. PAYER marks a session delivered  (EXPECT: only the payee can...)'
+-- mark_payment_delivered is security definer, so its own payee check is the
+-- only thing standing between a skater and faking delivery to release early.
+select public.mark_payment_delivered('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1');
+rollback;
+
+begin;
+select pg_temp.as_user('44444444-4444-4444-8444-444444444444');
+\echo '-- 3h. uninvolved user marks it delivered  (EXPECT: only the payee can...)'
+select public.mark_payment_delivered('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1');
+rollback;
+
+begin;
+select pg_temp.as_user('22222222-2222-4222-8222-222222222222');
+\echo '-- 3i. PAYEE marks their held session delivered  (EXPECT: succeeds)'
+select public.mark_payment_delivered('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1');
+\echo '-- 3j. delivered_at now set, state still held, timeline row added'
+select delivered_at is not null as delivered, state
+  from public.payments where id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1';
+select note from public.payment_events
+ where payment_id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1'
+   and note = 'Raw clips delivered';
+\echo '-- 3k. second tap is idempotent  (EXPECT: still one timeline row)'
+select public.mark_payment_delivered('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1');
+select count(*) as delivered_rows from public.payment_events
+ where payment_id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1'
+   and note = 'Raw clips delivered';
+rollback;
+
+begin;
+select pg_temp.as_user('22222222-2222-4222-8222-222222222222');
+\echo '-- 3l. deliver against a DECLINED payment  (EXPECT: payment is declined, not held)'
+-- bbb4 is declined and has the same payee as bbb1, so this reaches the state
+-- guard rather than stopping at the payee check the way bbb3 would.
+select public.mark_payment_delivered('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb4');
+rollback;
+
 \echo ''
 \echo '=============================================================='
 \echo '4. VISIBILITY'

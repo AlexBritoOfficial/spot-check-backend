@@ -136,23 +136,36 @@ on conflict (user_id, capability) do nothing;
 --
 -- Filming is payer-borne 15%: 12000 + 1800 = 13800 charged, filmer keeps 12000.
 -- Pro is payee-borne 20%:    4000 charged, pro receives 3200.
+-- Anything that reached `held` or beyond necessarily has Stripe ids: the
+-- webhook writes the intent id and the charge id together with the state, so
+-- a held payment without a charge id cannot exist in production. The fixtures
+-- used to omit them, which release-payment's own invariant check caught --
+-- it refuses to transfer against a held payment with no charge to draw on.
+-- `declined` keeps an intent but no charge, because the charge never
+-- succeeded, which is exactly the real shape.
 insert into public.payments (
   id, kind, state, payer_id, payee_id,
   subtotal_cents, fee_cents, fee_basis_points, fee_bearer,
-  total_cents, payee_amount_cents, payment_method_label
+  total_cents, payee_amount_cents, payment_method_label,
+  stripe_payment_intent_id, stripe_charge_id, delivered_at, confirmed_at
 ) values
   ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1', 'filming_session', 'held',
    '11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222',
-   12000, 1800, 1500, 'payer', 13800, 12000, 'Visa •••• 4242'),
+   12000, 1800, 1500, 'payer', 13800, 12000, 'Visa •••• 4242',
+   'pi_test_held_1', 'ch_test_held_1', null, null),
   ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2', 'pro_request', 'released',
    '11111111-1111-4111-8111-111111111111', '55555555-5555-4555-8555-555555555555',
-   4000, 800, 2000, 'payee', 4000, 3200, 'Visa •••• 4242'),
+   4000, 800, 2000, 'payee', 4000, 3200, 'Visa •••• 4242',
+   'pi_test_released_2', 'ch_test_released_2',
+   now() - interval '3 days', now() - interval '3 days'),
   ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3', 'filming_session', 'refunded',
    '11111111-1111-4111-8111-111111111111', '33333333-3333-4333-8333-333333333333',
-   9000, 1350, 1500, 'payer', 10350, 9000, 'Visa •••• 4242'),
+   9000, 1350, 1500, 'payer', 10350, 9000, 'Visa •••• 4242',
+   'pi_test_refunded_3', 'ch_test_refunded_3', null, null),
   ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb4', 'filming_session', 'declined',
    '11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222',
-   15000, 2250, 1500, 'payer', 17250, 15000, 'Visa •••• 4242')
+   15000, 2250, 1500, 'payer', 17250, 15000, 'Visa •••• 4242',
+   'pi_test_declined_4', null, null, null)
 on conflict (id) do nothing;
 
 -- The held payment's history, which is what TransactionDetail's STATUS list
@@ -164,11 +177,19 @@ values
    'Rider Okafor accepted', now() - interval '5 days' + interval '88 minutes')
 on conflict do nothing;
 
+-- charges_enabled/details_submitted/onboarding_completed_at arrived with
+-- 20261124120006 and default false, which would leave these fixtures saying a
+-- filmer can be paid out but never finished onboarding. Both of these are
+-- fully onboarded filmers, so all three are set.
 insert into public.payout_accounts
-  (user_id, stripe_connected_account_id, bank_last4, payouts_enabled, tax_details_complete, verified_at)
+  (user_id, stripe_connected_account_id, bank_last4, payouts_enabled,
+   tax_details_complete, verified_at, charges_enabled, details_submitted,
+   onboarding_completed_at)
 values
-  ('22222222-2222-4222-8222-222222222222', 'acct_test_filmer', '6789', true, true, now()),
-  ('55555555-5555-4555-8555-555555555555', 'acct_test_pro',    '4321', true, true, now())
+  ('22222222-2222-4222-8222-222222222222', 'acct_test_filmer', '6789', true,
+   true, now(), true, true, now()),
+  ('55555555-5555-4555-8555-555555555555', 'acct_test_pro',    '4321', true,
+   true, now(), true, true, now())
 on conflict (user_id) do nothing;
 
 insert into public.payouts (id, payee_id, amount_cents, state, arrives_at)
