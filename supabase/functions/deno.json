@@ -1,0 +1,14 @@
+{
+  "//": "Declares the formatting this directory is written in, so `deno fmt --check` is a usable gate rather than a 400-line diff. Single quotes and a 100-column width match the SQL and Swift in the other repos; Deno's defaults are double quotes at 80.",
+  "fmt": {
+    "singleQuote": true,
+    "lineWidth": 100,
+    "semiColons": true,
+    "indentWidth": 2
+  },
+  "lint": {
+    "rules": {
+      "tags": ["recommended"]
+    }
+  }
+}
