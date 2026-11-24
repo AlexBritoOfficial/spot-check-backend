@@ -52,19 +52,60 @@ Neither step is done by CI, on purpose.
 code but can never read or write a live key:
 
 ```sh
-# --remote=<ref>, not --project-ref: `secrets set` is remote-only in CLI 3.x
-# and defaults to the linked project. Needs `supabase login` first.
-# Prefer --env-file so the values never reach shell history.
-supabase secrets set --remote=<ref> --env-file ./stripe.env
+cat > /tmp/stripe.env <<'EOF'
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+EOF
+supabase secrets set --remote=<ref> --env-file /tmp/stripe.env --yes
+rm /tmp/stripe.env
 ```
+
+Three things in that command are each a trap already hit:
+
+- **`supabase login` first, not the CI token.** The deploy token's Edge Function Secrets scope is
+  `None`, so it cannot write these. It is not an oversight.
+- **`--remote=<ref>`, not `--project-ref`.** The latter still works but warns it is removed in v4,
+  and `setup-cli` pulls `latest`.
+- **`--yes`.** Hosted changes prompt for confirmation, and the CLI accepts that confirmation _only_
+  from this flag or `SUPABASE_YES` exported in the shell — never from a `.env` file. Omitting it is
+  what made the CI functions deploy fail with "Confirmation required ... Nothing was changed".
+
+The heredoc keeps both values out of shell history, which passing them as arguments would not.
 
 `CONNECT_RETURN_URL_BASE` is optional and defaults to the deployed web app. Only `pk_test_…` ever
 reaches the iOS app, via the gitignored `Config/Secrets.xcconfig`.
 
-**2. The webhook endpoint.** In the Stripe dashboard, point an endpoint at
-`https://<ref>.functions.supabase.co/stripe-webhook` and subscribe it to exactly these events — the
-handler ignores anything else, but an endpoint that sends nothing is the usual reason state never
-updates:
+**2. The webhook endpoint.** Create it from the CLI, which also prints the signing secret — the
+dashboard works too, but this is one command:
+
+```sh
+stripe webhook_endpoints create \
+  --url "https://<ref>.supabase.co/functions/v1/stripe-webhook" \
+  --description "Spot Check <env>" \
+  --enabled-events identity.verification_session.verified \
+  --enabled-events identity.verification_session.requires_input \
+  --enabled-events identity.verification_session.processing \
+  --enabled-events identity.verification_session.canceled \
+  --enabled-events payment_intent.processing \
+  --enabled-events payment_intent.succeeded \
+  --enabled-events payment_intent.payment_failed \
+  --enabled-events payment_intent.canceled \
+  --enabled-events charge.refunded \
+  --enabled-events account.updated \
+  --enabled-events payment_method.attached \
+  --enabled-events payment_method.detached
+```
+
+`"secret"` in the response is `STRIPE_WEBHOOK_SECRET`, and it is only fully readable at creation. Do
+not pass `--api-version`: CLI 1.55.x does not offer `2026-11-18`, so the endpoint takes the account
+default. That is fine here — the handler reads only long-stable fields and re-retrieves the Identity
+session with `expand` rather than trusting the payload's shape.
+
+`<ref>.supabase.co/functions/v1/<name>` and `<ref>.functions.supabase.co/<name>` both resolve; the
+first matches what `functions serve` prints locally, so this file uses it throughout.
+
+The twelve events, for reference or for the dashboard — the handler ignores anything else, but an
+endpoint that sends nothing is the usual reason state never updates:
 
 ```
 identity.verification_session.verified
@@ -81,13 +122,15 @@ payment_method.attached
 payment_method.detached
 ```
 
-The signing secret shown when the endpoint is created is `STRIPE_WEBHOOK_SECRET` above. It differs
-per endpoint, so Test/QA, Staging and Production each have their own.
+The signing secret differs per endpoint, so Test/QA, Staging and Production each have their own.
+
+**Also dashboard-only, with no CLI equivalent:** enabling Identity, and enabling Connect with
+Express plus the transfers capability.
 
 ## Local development
 
 ```sh
-supabase functions serve                      # all four, with hot reload
+supabase functions serve                      # all five, with hot reload
 stripe listen --forward-to localhost:54321/functions/v1/stripe-webhook
 ```
 
