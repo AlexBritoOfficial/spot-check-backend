@@ -53,7 +53,16 @@ jobs:
           # Per-function settings come from supabase/config.toml, which is why
           # there is no --no-verify-jwt here -- [functions.stripe-webhook]
           # turns it off for that one function only.
-          supabase functions deploy --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}"
+          # --remote=<ref>, NOT --project-ref: that flag does not exist on
+          # `functions deploy` in CLI 3.x and the command would fail outright.
+          # Same family of breakage as the db push --remote fix in PR #2, and
+          # for the same reason -- setup-cli pulls `latest`.
+          #
+          # Passed explicitly rather than relying on the `link` in the previous
+          # step, so this does not depend on supabase/.temp surviving between
+          # steps. Add --use-api to bundle server-side if Docker on the runner
+          # ever becomes a problem.
+          supabase functions deploy --remote="${{ secrets.SUPABASE_PROJECT_REF }}"
 
           # Deliberately NOT setting STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET
           # here. The deploy token's Edge Function Secrets scope is None on

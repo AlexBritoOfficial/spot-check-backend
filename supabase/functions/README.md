@@ -52,10 +52,10 @@ Neither step is done by CI, on purpose.
 code but can never read or write a live key:
 
 ```sh
-supabase secrets set \
-  STRIPE_SECRET_KEY=sk_test_... \
-  STRIPE_WEBHOOK_SECRET=whsec_... \
-  --project-ref <ref>
+# --remote=<ref>, not --project-ref: `secrets set` is remote-only in CLI 3.x
+# and defaults to the linked project. Needs `supabase login` first.
+# Prefer --env-file so the values never reach shell history.
+supabase secrets set --remote=<ref> --env-file ./stripe.env
 ```
 
 `CONNECT_RETURN_URL_BASE` is optional and defaults to the deployed web app. Only `pk_test_…` ever
