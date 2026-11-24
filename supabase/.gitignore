@@ -6,3 +6,15 @@
 .env.keys
 .env.local
 .env.*.local
+
+# Deno lockfile for supabase/functions.
+#
+# Deliberately not committed. The local toolchain (denoland/deno:latest, via
+# the container in AGENTS.md) writes lockfile version 5, while the deployed
+# edge runtime is pinned to Deno 2.1.4, which only reads version 4 -- a
+# committed lock would be a deploy failure that cannot be reproduced locally.
+#
+# Reproducibility does not depend on it: every import in supabase/functions
+# names an exact version (npm:stripe@23.2.0, npm:@supabase/supabase-js@2.119.2),
+# not a range.
+functions/deno.lock
