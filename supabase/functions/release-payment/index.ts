@@ -1,22 +1,25 @@
-// The skater confirms they received their clips, and the filmer gets paid.
+// The filmer delivers the clip, and that is what pays them.
 //
-// This is the last step of the canvas's escrow trail
-// (ClipVaultScreen.swift:55-60): Charged & held -> Both confirmed -> Raw clips
-// delivered -> **Filmer paid**. The payer confirming receipt is the trigger
-// (Alex, 2026-11-24).
+// Alex, 2026-11-24: "If the filmer sends the clip, they should get paid." So
+// this is called by the PAYEE, and delivery is the release trigger --
+// matching ClipUploadScreen.swift:66, which promised the filmer exactly that
+// ("Delivering releases your payment from escrow").
+//
+// An earlier revision had the payer call this to confirm receipt. That was
+// reversed because it let a skater leave a filmer unpaid indefinitely by
+// doing nothing; 20261124120008 records the correction. One consequence worth
+// knowing: there is no auto-release timeout anywhere in this system, and none
+// is needed, because nothing waits on the skater.
 //
 // Separate charges and transfers, as 20261124120002 lays out: the charge
 // already landed in the PLATFORM balance, and this moves the payee's share on
-// to their connected account. `source_transaction` ties the transfer to the
-// original charge, so it draws on those specific funds rather than requiring
-// an available platform balance.
+// to their connected account. `source_transaction` ties the transfer to that
+// specific charge rather than requiring an available platform balance.
 //
-// The amount transferred is `payee_amount_cents` -- never `total_cents` and
-// never recomputed here. The fee model already decided who bears the fee, and
-// `payments_fee_model_consistent` holds the row to it: for filming the skater
-// paid rate + 15% and the filmer keeps 100% of their rate, while for a pro
-// request 20% comes out of the price. Recomputing either here would be a
-// second source of truth for money.
+// The amount is `payee_amount_cents` -- never `total_cents`, never recomputed.
+// The fee model already decided who bears the fee and
+// `payments_fee_model_consistent` holds the row to it: filming adds 15% on top
+// so the filmer keeps 100% of their rate, while a pro request takes 20% out.
 import { stripe } from '../_shared/stripe.ts';
 import { adminClient, callerClient, requireUser, Unauthorized } from '../_shared/supabase.ts';
 import { fail, json, preflight } from '../_shared/http.ts';
@@ -36,41 +39,37 @@ Deno.serve(async (req) => {
       return json({ error: 'payment_id is required.' }, 400);
     }
 
-    // Read as the caller, so RLS does the first half of the authorization.
+    // Read as the caller, so RLS does the first half of the authorization: a
+    // payment between two other people is simply not found.
     const { data: payment, error: readError } = await callerClient(authHeader)
       .from('payments')
       .select(
-        'id, state, payer_id, payee_id, payee_amount_cents, currency, stripe_charge_id, delivered_at, confirmed_at',
+        'id, state, payer_id, payee_id, payee_amount_cents, currency, stripe_charge_id, delivered_at',
       )
       .eq('id', paymentId)
       .maybeSingle();
     if (readError) throw readError;
     if (!payment) return json({ error: 'No such payment.' }, 404);
 
-    // The payer confirms receipt. The payee must not be able to release their
-    // own escrow -- that is the whole point of holding it.
-    if (payment.payer_id !== user.id) {
-      return json({ error: 'Only the payer can confirm receipt.' }, 403);
+    // The person being paid is the one who delivers. The payer must not be
+    // able to call this: it would let a skater mark a session delivered that
+    // the filmer never shot, and pay them for it.
+    if (payment.payee_id !== user.id) {
+      return json({ error: 'Only the filmer can deliver.' }, 403);
     }
     if (payment.state !== 'held') {
       return json({ error: `This payment is ${payment.state}, not held.` }, 409);
     }
-    // Cannot confirm receipt of something that was never delivered. Also
-    // keeps the escrow trail in order rather than letting step 4 precede 3.
-    if (!payment.delivered_at) {
-      return json({
-        error: 'not_delivered',
-        message: 'The filmer has not delivered the clips yet.',
-      }, 409);
-    }
     if (!payment.stripe_charge_id) {
-      // `held` without a charge id should be impossible -- the webhook writes
+      // `held` with no charge id should be impossible -- the webhook writes
       // both together -- so this is a bug signal, not a user error.
       throw new Error(`payment ${payment.id} is held with no stripe_charge_id`);
     }
 
-    // The filmer needs somewhere for the money to go. Checked before the
-    // transfer so the skater gets a clear answer instead of a Stripe error.
+    // Deliberately NOT checked: payer_confirmed_session_at. Gating payment on
+    // the skater confirming would rebuild the stall this rule exists to
+    // remove. See the note in 20261124120008.
+
     const { data: payout, error: payoutError } = await db
       .from('payout_accounts')
       .select('stripe_connected_account_id, payouts_enabled')
@@ -79,52 +78,51 @@ Deno.serve(async (req) => {
     if (payoutError) throw payoutError;
 
     if (!payout?.stripe_connected_account_id || !payout.payouts_enabled) {
-      // Deliberately not a failure of the confirmation: the skater has done
-      // their part. The money stays held and the filmer has to finish payout
-      // setup, which connect-onboarding walks them through.
+      // The filmer cannot be paid until Stripe will take the money. Nothing is
+      // recorded as delivered either, so the clip is not handed over for free:
+      // connect-onboarding walks them through finishing setup, then they
+      // deliver again.
       return json({
-        error: 'payee_payouts_not_ready',
-        message: 'The filmer has not finished setting up payouts yet. Your confirmation is saved.',
+        error: 'payouts_not_ready',
+        message: 'Finish setting up payouts before delivering, so this can be paid out.',
       }, 409);
-    }
-
-    // Record the confirmation first. If the transfer then fails, the skater's
-    // confirmation is not lost and a retry does not ask them to tap again --
-    // and because confirmed_at is only ever set here, it cannot be forged.
-    if (!payment.confirmed_at) {
-      const { error: confirmError } = await db
-        .from('payments')
-        .update({ confirmed_at: new Date().toISOString() })
-        .eq('id', payment.id);
-      if (confirmError) throw confirmError;
     }
 
     const transfer = await stripe.transfers.create({
       amount: payment.payee_amount_cents,
       currency: payment.currency,
       destination: payout.stripe_connected_account_id,
-      // Draws on the funds from this specific charge.
       source_transaction: payment.stripe_charge_id,
       transfer_group: payment.id,
       metadata: { payment_id: payment.id, payee_id: payment.payee_id },
     }, {
-      // One transfer per payment, ever. Without this, a double tap or a retry
-      // after a timeout pays the filmer twice out of the platform's own money.
+      // One transfer per payment, ever. Without this, a double tap on
+      // "Deliver" pays the filmer twice out of the platform's own money.
       idempotencyKey: `tr_${payment.id}`,
     });
+
+    // Stamp the delivery only once the money has actually moved. The order is
+    // the opposite of the previous revision's on purpose: there, the payer's
+    // confirmation was worth keeping even if the transfer failed, because a
+    // human had tapped something. Here, `delivered_at` is what asserts the
+    // filmer was paid for delivering, so recording it against a failed
+    // transfer would state something untrue.
+    const { error: deliveredError } = await db.rpc('mark_payment_delivered', {
+      p_payment_id: payment.id,
+    });
+    if (deliveredError) throw deliveredError;
 
     // Moves the row to `released` and appends the timeline entry in one step.
     const { error: eventError } = await db.rpc('record_payment_event', {
       p_payment_id: payment.id,
       p_state: 'released',
-      p_note: 'Released to filmer',
+      p_note: 'Released to filmer on delivery',
     });
     if (eventError) throw eventError;
 
-    // The earning side's record. `arrives_at` is left null on purpose: when
-    // the money reaches the filmer's *bank* is a Stripe payout, a later and
-    // separate event from this transfer, so filling it in now would be a
-    // guess shown to the filmer as a date.
+    // `arrives_at` is left null on purpose: when the money reaches the
+    // filmer's *bank* is a Stripe payout, a later and separate event from this
+    // transfer, so filling it in now would be a guess shown as a date.
     const { data: payoutRow, error: payoutInsertError } = await db
       .from('payouts')
       .insert({
@@ -151,6 +149,6 @@ Deno.serve(async (req) => {
     });
   } catch (error) {
     if (error instanceof Unauthorized) return fail(error, 401, 'Not signed in.');
-    return fail(error, 500, 'Could not release this payment.');
+    return fail(error, 500, 'Could not deliver and release this payment.');
   }
 });

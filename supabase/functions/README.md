@@ -7,7 +7,7 @@ Five functions, four of them called by the iOS app and one called by Stripe.
 | `identity-session`   | user JWT         | Starts/resumes a Stripe Identity session, returns its `client_secret` |
 | `payment-intent`     | user JWT         | PaymentIntent + ephemeral key for an existing `payments` row          |
 | `connect-onboarding` | user JWT         | Creates/refreshes a Connect **Express** account link                  |
-| `release-payment`    | user JWT         | The payer confirms receipt; transfers the payee's share               |
+| `release-payment`    | user JWT         | The payee delivers; transfers their share and releases                |
 | `stripe-webhook`     | Stripe signature | The **only** writer of identity, payment and Connect state            |
 
 `stripe-webhook` is the one function with `verify_jwt = false` (`supabase/config.toml`) — Stripe
@@ -15,19 +15,31 @@ does not send a Supabase JWT, so the `Stripe-Signature` header is the authentica
 
 ## The escrow trail
 
-The canvas draws four steps (`ClipVaultScreen.swift:55-60`), and this is where each one gets
-written:
+The canvas draws four steps (`ClipVaultScreen.swift:55-60`). Where each is written:
 
-| Step                | Written by                                                                        |
-| ------------------- | --------------------------------------------------------------------------------- |
-| Charged & held      | `stripe-webhook`, on `payment_intent.succeeded`                                   |
-| Both confirmed      | **not modelled yet** — a separate pair of confirmations that the session happened |
-| Raw clips delivered | `mark_payment_delivered()`, callable only by the payee                            |
-| Filmer paid         | `release-payment`, callable only by the payer                                     |
+| Step                | Written by                                                 |
+| ------------------- | ---------------------------------------------------------- |
+| Charged & held      | `stripe-webhook`, on `payment_intent.succeeded`            |
+| Both confirmed      | `confirm_session_happened()` — either party, own side only |
+| Raw clips delivered | `release-payment`, payee only                              |
+| Filmer paid         | the same call — **delivering is what releases the money**  |
 
-The payer confirming receipt is what moves the money. A failed transfer leaves the confirmation
-recorded and the payment still `held`, so it is retryable without asking the skater to confirm
-twice.
+**Delivery is the release trigger.** The filmer sending the clip pays them (Alex, 2026-11-24), which
+is what `ClipUploadScreen.swift:66` promised all along. The last two steps are therefore one atomic
+operation, not two.
+
+Two consequences worth knowing:
+
+- **There is no auto-release timeout anywhere, and none is needed.** Nothing waits on the skater, so
+  there is no way for them to leave a filmer unpaid by doing nothing. An earlier revision had the
+  payer confirm receipt to release; `20261124120008` records why that was reversed.
+- **"Both confirmed" does not gate delivery.** It is recorded as evidence for disputes. Gating on it
+  would rebuild the same stall, with the skater withholding the session confirmation instead of the
+  receipt one. That is a judgement call, flagged in `20261124120008`; reverse it by adding the check
+  to `mark_payment_delivered`.
+
+`payments.confirmed_at` survives from the previous revision as an informational receipt column.
+Nothing writes it yet.
 
 `transfer.reversed` is **not** handled by the webhook yet — a reversal would currently leave the
 `payouts` row saying `released`.

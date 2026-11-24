@@ -142,42 +142,49 @@ update public.payments set delivered_at = now() where payee_id = auth.uid();
 rollback;
 
 begin;
-select pg_temp.as_user('11111111-1111-4111-8111-111111111111');
-\echo '-- 3g. PAYER marks a session delivered  (EXPECT: only the payee can...)'
--- mark_payment_delivered is security definer, so its own payee check is the
--- only thing standing between a skater and faking delivery to release early.
+select pg_temp.as_user('22222222-2222-4222-8222-222222222222');
+\echo '-- 3g. PAYEE calls mark_payment_delivered directly  (EXPECT: permission denied)'
+-- Revoked from authenticated in 20261124120008. Delivery has to move money,
+-- which Postgres cannot do, so a client reaching this RPC directly would
+-- record a delivery that never paid. The release-payment function (service
+-- role) is the only caller.
 select public.mark_payment_delivered('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1');
+rollback;
+
+begin;
+select pg_temp.as_user('22222222-2222-4222-8222-222222222222');
+\echo '-- 3h. payee sets the PAYERS session confirmation  (EXPECT: UPDATE 0 / denied)'
+update public.payments set payer_confirmed_session_at = now()
+ where id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1';
+rollback;
+
+begin;
+select pg_temp.as_user('11111111-1111-4111-8111-111111111111');
+\echo '-- 3i. PAYER confirms the session  (EXPECT: payer side set, payee side null)'
+select public.confirm_session_happened('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1');
+select payer_confirmed_session_at is not null as payer_side,
+       payee_confirmed_session_at is not null as payee_side
+  from public.payments where id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1';
+\echo '-- 3j. calling it twice is idempotent  (EXPECT: 1 timeline row)'
+select public.confirm_session_happened('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1');
+select count(*) as skater_confirm_rows from public.payment_events
+ where payment_id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1'
+   and note = 'Skater confirmed the session';
+rollback;
+
+begin;
+select pg_temp.as_user('22222222-2222-4222-8222-222222222222');
+\echo '-- 3k. PAYEE confirms the session  (EXPECT: payee side set, payer side null)'
+select public.confirm_session_happened('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1');
+select payer_confirmed_session_at is not null as payer_side,
+       payee_confirmed_session_at is not null as payee_side
+  from public.payments where id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1';
 rollback;
 
 begin;
 select pg_temp.as_user('44444444-4444-4444-8444-444444444444');
-\echo '-- 3h. uninvolved user marks it delivered  (EXPECT: only the payee can...)'
-select public.mark_payment_delivered('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1');
-rollback;
-
-begin;
-select pg_temp.as_user('22222222-2222-4222-8222-222222222222');
-\echo '-- 3i. PAYEE marks their held session delivered  (EXPECT: succeeds)'
-select public.mark_payment_delivered('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1');
-\echo '-- 3j. delivered_at now set, state still held, timeline row added'
-select delivered_at is not null as delivered, state
-  from public.payments where id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1';
-select note from public.payment_events
- where payment_id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1'
-   and note = 'Raw clips delivered';
-\echo '-- 3k. second tap is idempotent  (EXPECT: still one timeline row)'
-select public.mark_payment_delivered('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1');
-select count(*) as delivered_rows from public.payment_events
- where payment_id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1'
-   and note = 'Raw clips delivered';
-rollback;
-
-begin;
-select pg_temp.as_user('22222222-2222-4222-8222-222222222222');
-\echo '-- 3l. deliver against a DECLINED payment  (EXPECT: payment is declined, not held)'
--- bbb4 is declined and has the same payee as bbb1, so this reaches the state
--- guard rather than stopping at the payee check the way bbb3 would.
-select public.mark_payment_delivered('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb4');
+\echo '-- 3l. uninvolved user confirms the session  (EXPECT: only a party can...)'
+select public.confirm_session_happened('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1');
 rollback;
 
 \echo ''
