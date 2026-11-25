@@ -1,0 +1,31 @@
+name: Database tests
+
+# Runs the pgTAP suite in supabase/tests against a fresh local stack built from
+# this branch's migrations and seed. The deploy workflows only prove that
+# migrations *apply*; this proves the rules in them hold.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  pgtap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          # Pinned, unlike the deploy workflows: a CLI release once changed
+          # `db push`'s default target and broke QA with no repo change. A
+          # test gate should only go red because of this repo.
+          version: 3.2.0
+
+      - name: Start the local stack (applies migrations and seed)
+        run: supabase start
+
+      - name: Run pgTAP tests
+        run: supabase test db

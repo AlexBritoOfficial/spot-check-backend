@@ -202,3 +202,42 @@ insert into public.payout_items (payout_id, payment_id)
 values ('cccccccc-cccc-4ccc-8ccc-ccccccccccc1',
         'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2')
 on conflict do nothing;
+
+-- ---------------------------------------------------------------------------
+-- Filming requests
+-- ---------------------------------------------------------------------------
+-- One of each thing Discover and the skater's bookings have to draw: an open
+-- request any filmer can take, one named for the live filmer, and the accepted
+-- session behind the held payment above -- which until now paid for nothing.
+-- Times are relative to the reset, so they are always in the future locally.
+insert into public.filming_requests (
+  id, skater_id, requested_filmer_id, filmer_id, package, spot_id, lat, lng,
+  location_label, starts_at, ends_at, lighting, security_risk, notes,
+  status, accepted_at, rate_cents
+)
+values
+  ('dddddddd-dddd-4ddd-8ddd-ddddddddddd1', '11111111-1111-4111-8111-111111111111',
+   null, null, 'hourly_street', null, 42.3497, -71.0760,
+   'Pin near Copley Square',
+   date_trunc('day', now()) + interval '2 days 17 hours',
+   date_trunc('day', now()) + interval '2 days 19 hours',
+   'golden_hour', 'sometimes', 'Kickflip down the three', 'requested', null, null),
+  ('dddddddd-dddd-4ddd-8ddd-ddddddddddd2', '11111111-1111-4111-8111-111111111111',
+   '22222222-2222-4222-8222-222222222222', null, 'park_drop_in',
+   (select id from public.spots where name = 'Lynch Family Skatepark'), 42.3730, -71.0760,
+   'Lynch Family Skatepark',
+   date_trunc('day', now()) + interval '3 days 14 hours',
+   date_trunc('day', now()) + interval '3 days 15 hours',
+   'daylight', 'low', null, 'requested', null, null),
+  ('dddddddd-dddd-4ddd-8ddd-ddddddddddd3', '11111111-1111-4111-8111-111111111111',
+   null, '22222222-2222-4222-8222-222222222222', 'hourly_street',
+   (select id from public.spots where name = 'Eggs'), 42.3554, -71.0656,
+   'Eggs',
+   date_trunc('day', now()) + interval '1 day 17 hours',
+   date_trunc('day', now()) + interval '1 day 19 hours',
+   'golden_hour', 'sometimes', null, 'accepted', now() - interval '5 days', 12000)
+on conflict (id) do nothing;
+
+update public.payments
+   set filming_request_id = 'dddddddd-dddd-4ddd-8ddd-ddddddddddd3'
+ where id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1';
