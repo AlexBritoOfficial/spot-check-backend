@@ -118,7 +118,10 @@ Deno.test('anything else is a 500 that leaks nothing', () => {
 // --- The QA mock background check -------------------------------------------
 
 Deno.test('the mock runs only when the QA secret says exactly "true"', () => {
-  assertEquals(mockReviewEnabled((k) => (k === 'MOCK_BACKGROUND_CHECK' ? 'true' : undefined)), true);
+  assertEquals(
+    mockReviewEnabled((k) => (k === 'MOCK_BACKGROUND_CHECK' ? 'true' : undefined)),
+    true,
+  );
   assertEquals(mockReviewEnabled(() => undefined), false);
   assertEquals(mockReviewEnabled(() => 'false'), false);
   assertEquals(mockReviewEnabled(() => 'TRUE '), false);

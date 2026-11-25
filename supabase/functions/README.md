@@ -1,14 +1,15 @@
 # Edge Functions
 
-Five functions, four of them called by the iOS app and one called by Stripe.
+Six functions, five of them called by the iOS app and one called by Stripe.
 
-| Function             | Auth             | Does                                                                  |
-| -------------------- | ---------------- | --------------------------------------------------------------------- |
-| `identity-session`   | user JWT         | Starts/resumes a Stripe Identity session, returns its `client_secret` |
-| `payment-intent`     | user JWT         | PaymentIntent + ephemeral key for an existing `payments` row          |
-| `connect-onboarding` | user JWT         | Creates/refreshes a Connect **Express** account link                  |
-| `release-payment`    | user JWT         | The payee delivers; transfers their share and releases                |
-| `stripe-webhook`     | Stripe signature | The **only** writer of identity, payment and Connect state            |
+| Function                    | Auth             | Does                                                                             |
+| --------------------------- | ---------------- | -------------------------------------------------------------------------------- |
+| `identity-session`          | user JWT         | Starts/resumes a Stripe Identity session, returns its `client_secret`            |
+| `payment-intent`            | user JWT         | PaymentIntent + ephemeral key for an existing `payments` row                     |
+| `connect-onboarding`        | user JWT         | Creates/refreshes a Connect **Express** account link                             |
+| `release-payment`           | user JWT         | The payee delivers; transfers their share and releases                           |
+| `submit-filmer-application` | user JWT         | Submits an application to film, records background-check consent; QA mock review |
+| `stripe-webhook`            | Stripe signature | The **only** writer of identity, payment and Connect state                       |
 
 `stripe-webhook` is the one function with `verify_jwt = false` (`supabase/config.toml`) — Stripe
 does not send a Supabase JWT, so the `Stripe-Signature` header is the authentication.
@@ -72,6 +73,15 @@ Three things in that command are each a trap already hit:
   what made the CI functions deploy fail with "Confirmation required ... Nothing was changed".
 
 The heredoc keeps both values out of shell history, which passing them as arguments would not.
+
+**QA only: `MOCK_BACKGROUND_CHECK=true`.** There is no screening partner yet, and nothing else ever
+moves an application out of review. With this secret set to exactly `true`,
+`submit-filmer-application` passes the applicant's background check **and** gear review 60 seconds
+after they submit (Alex, 2026-11-25). Never set it on production: there, a person reviews.
+
+```sh
+supabase secrets set --remote=<qa-ref> MOCK_BACKGROUND_CHECK=true --yes
+```
 
 `CONNECT_RETURN_URL_BASE` is optional and defaults to the deployed web app. Only `pk_test_…` ever
 reaches the iOS app, via the gitignored `Config/Secrets.xcconfig`.
