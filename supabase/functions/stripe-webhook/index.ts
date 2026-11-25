@@ -16,7 +16,7 @@
 //      re-stringifying changes the bytes and every signature then fails.
 //   3. verify_jwt = false for this function (see config.toml). Stripe does not
 //      send a Supabase JWT. The signature *is* the authentication.
-import { cryptoProvider, stripe, stripeWebhookSecret } from '../_shared/stripe.ts';
+import { cryptoProvider, stripe, stripeWebhookSecrets } from '../_shared/stripe.ts';
 import { adminClient } from '../_shared/supabase.ts';
 import { isAdult } from '../_shared/age.ts';
 
@@ -37,19 +37,31 @@ Deno.serve(async (req) => {
   const signature = req.headers.get('Stripe-Signature');
   if (!signature) return new Response('missing signature', { status: 400 });
 
+  // Tried against each configured destination's secret. The platform and
+  // Connect destinations sign with different secrets, and nothing in the
+  // request says which one sent it, so the only way to tell is to try.
   let event;
-  try {
-    event = await stripe.webhooks.constructEventAsync(
-      payload,
-      signature,
-      stripeWebhookSecret(),
-      undefined,
-      cryptoProvider,
-    );
-  } catch (error) {
+  let lastError: unknown;
+  for (const secret of stripeWebhookSecrets()) {
+    try {
+      event = await stripe.webhooks.constructEventAsync(
+        payload,
+        signature,
+        secret,
+        undefined,
+        cryptoProvider,
+      );
+      break;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (!event) {
     // 400, not 500: a bad signature is not a server fault and Stripe should
-    // not retry it.
-    console.error('signature verification failed', error);
+    // not retry it. If this fires for account.updated only, the likely cause
+    // is a missing STRIPE_WEBHOOK_SECRET_CONNECT, not a broken signature.
+    console.error('signature verification failed against all configured secrets', lastError);
     return new Response('invalid signature', { status: 400 });
   }
 
