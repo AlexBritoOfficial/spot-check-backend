@@ -4,6 +4,7 @@ import { isAdult, type StripeDob } from './age.ts';
 
 /** The part of an identity_verifications row these decisions read. */
 export interface IdentityVerificationRow {
+  stripe_verification_session_id: string;
   status: 'requires_input' | 'processing' | 'verified' | 'canceled';
   verified_is_adult: boolean | null;
 }
@@ -54,11 +55,30 @@ export async function retrieveVerifiedIsAdult(
  * - `processing`: Stripe is still checking; the existing session stands.
  * - `create`: start a new session. Includes a verification whose age came back
  *   unknown (no legible date of birth), so that user can prove they are 18+.
+ *
+ * A `requires_input` row is checked with Stripe first (`stripeStatus`). The row
+ * only changes when a webhook lands, so a user who just submitted -- or whose
+ * webhook was lost -- still has a requires_input row. Replacing their session
+ * then would throw away a verification Stripe has already made, and its
+ * webhook would match no row when it arrived.
  */
-export function identitySessionStep(
+export async function identitySessionStep(
   existing: IdentityVerificationRow | null,
-): 'verified' | 'processing' | 'create' {
-  if (existing?.status === 'verified' && existing.verified_is_adult !== null) return 'verified';
-  if (existing?.status === 'processing') return 'processing';
-  return 'create';
+  stripeStatus: (sessionId: string) => Promise<string>,
+): Promise<'verified' | 'processing' | 'create'> {
+  if (!existing) return 'create';
+  switch (existing.status) {
+    case 'verified':
+      return existing.verified_is_adult === null ? 'create' : 'verified';
+    case 'processing':
+      return 'processing';
+    case 'canceled':
+      return 'create';
+    case 'requires_input': {
+      // Verified at Stripe is still answered as processing: only the webhook
+      // marks a row verified, because only it works out whether they are 18+.
+      const status = await stripeStatus(existing.stripe_verification_session_id);
+      return status === 'processing' || status === 'verified' ? 'processing' : 'create';
+    }
+  }
 }

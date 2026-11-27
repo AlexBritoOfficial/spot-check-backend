@@ -57,35 +57,81 @@ Deno.test('no date of birth back from Stripe is unknown, not a minor', async () 
 
 // --- identitySessionStep -----------------------------------------------------
 
+type Status = IdentityVerificationRow['status'];
+
 const row = (
-  status: IdentityVerificationRow['status'],
+  status: Status,
   verified_is_adult: boolean | null = null,
-): IdentityVerificationRow => ({ status, verified_is_adult });
-
-Deno.test('no row yet starts a session', () => {
-  assertEquals(identitySessionStep(null), 'create');
+): IdentityVerificationRow => ({
+  stripe_verification_session_id: 'vs_existing',
+  status,
+  verified_is_adult,
 });
 
-Deno.test('a verified adult is done', () => {
-  assertEquals(identitySessionStep(row('verified', true)), 'verified');
+/** Stands in for asking Stripe a session's status; records who was asked. */
+function fakeStripeStatus(status: Status) {
+  const asked: string[] = [];
+  const lookup = (id: string) => {
+    asked.push(id);
+    return Promise.resolve(status);
+  };
+  return { lookup, asked };
+}
+
+/** For cases that must be decided from the row alone. */
+const neverAsked = () => Promise.reject(new Error('Stripe should not be asked'));
+
+Deno.test('no row yet starts a session', async () => {
+  assertEquals(await identitySessionStep(null, neverAsked), 'create');
 });
 
-Deno.test('a verified minor is done: retrying cannot change their date of birth', () => {
-  assertEquals(identitySessionStep(row('verified', false)), 'verified');
+Deno.test('a verified adult is done', async () => {
+  assertEquals(await identitySessionStep(row('verified', true), neverAsked), 'verified');
 });
 
-Deno.test('verified with an unknown age can try again', () => {
+Deno.test('a verified minor is done: retrying cannot change their date of birth', async () => {
+  assertEquals(await identitySessionStep(row('verified', false), neverAsked), 'verified');
+});
+
+Deno.test('verified with an unknown age can try again', async () => {
   // Stripe verified the document but returned no legible date of birth, so
   // nobody knows whether they are 18+. Answering "verified" would leave them
   // stuck with no way to prove it.
-  assertEquals(identitySessionStep(row('verified', null)), 'create');
+  assertEquals(await identitySessionStep(row('verified', null), neverAsked), 'create');
 });
 
-Deno.test('a session Stripe is still checking is not replaced', () => {
-  assertEquals(identitySessionStep(row('processing')), 'processing');
+Deno.test('a session Stripe is still checking is not replaced', async () => {
+  assertEquals(await identitySessionStep(row('processing'), neverAsked), 'processing');
 });
 
-Deno.test('a turned-down or abandoned session starts a new one', () => {
-  assertEquals(identitySessionStep(row('requires_input')), 'create');
-  assertEquals(identitySessionStep(row('canceled')), 'create');
+Deno.test('an abandoned session starts a new one', async () => {
+  assertEquals(await identitySessionStep(row('canceled'), neverAsked), 'create');
+});
+
+Deno.test('a requires_input row is checked with Stripe before it is replaced', async () => {
+  // The row only moves on when a webhook lands. If the user submitted and the
+  // webhook is late (or lost), the row still says requires_input -- replacing
+  // the session then throws away a verification Stripe already made.
+  const { lookup, asked } = fakeStripeStatus('requires_input');
+  assertEquals(await identitySessionStep(row('requires_input'), lookup), 'create');
+  assertEquals(asked, ['vs_existing']);
+});
+
+Deno.test('a submitted session the webhook has not reported yet is kept', async () => {
+  const { lookup } = fakeStripeStatus('processing');
+  assertEquals(await identitySessionStep(row('requires_input'), lookup), 'processing');
+});
+
+Deno.test('a session Stripe verified before the webhook landed is kept', async () => {
+  // Answered as processing: the row is only ever made "verified" by the
+  // webhook, which is also what works out whether the user is 18+.
+  const { lookup } = fakeStripeStatus('verified');
+  assertEquals(await identitySessionStep(row('requires_input'), lookup), 'processing');
+});
+
+Deno.test('a session Stripe turned down or cancelled starts a new one', async () => {
+  assertEquals(
+    await identitySessionStep(row('requires_input'), fakeStripeStatus('canceled').lookup),
+    'create',
+  );
 });

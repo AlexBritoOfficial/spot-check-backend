@@ -26,15 +26,19 @@ Deno.serve(async (req) => {
     // IDVerifyScreen can skip straight ahead on this.
     const { data: existing, error: readError } = await db
       .from('identity_verifications')
-      .select('status, verified_is_adult')
+      .select('stripe_verification_session_id, status, verified_is_adult')
       .eq('user_id', user.id)
       .maybeSingle();
     if (readError) throw readError;
 
     // Done, or still being checked, unless the age came back unknown -- see
-    // identitySessionStep. A processing session is reused rather than
-    // replaced, so a user who backgrounds the app mid-flow comes back to it.
-    const step = identitySessionStep(existing);
+    // identitySessionStep. A submitted session is reused rather than replaced,
+    // so a user who backgrounds the app mid-flow, or whose webhook is late,
+    // keeps it. A session's status alone is not sensitive: the standard key.
+    const step = await identitySessionStep(
+      existing,
+      async (id) => (await stripe.identity.verificationSessions.retrieve(id)).status,
+    );
     if (step !== 'create') return json({ status: step });
 
     const session = await stripe.identity.verificationSessions.create({
