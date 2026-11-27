@@ -16,9 +16,14 @@
 //      re-stringifying changes the bytes and every signature then fails.
 //   3. verify_jwt = false for this function (see config.toml). Stripe does not
 //      send a Supabase JWT. The signature *is* the authentication.
-import { cryptoProvider, stripe, stripeWebhookSecrets } from '../_shared/stripe.ts';
+import {
+  cryptoProvider,
+  stripe,
+  stripeIdentityResultsKey,
+  stripeWebhookSecrets,
+} from '../_shared/stripe.ts';
 import { adminClient } from '../_shared/supabase.ts';
-import { isAdult } from '../_shared/age.ts';
+import { retrieveVerifiedIsAdult } from '../_shared/identity.ts';
 
 // Maps Stripe's PaymentIntent lifecycle onto our payment_state. 'held' rather
 // than 'paid' on success: the money is in the platform balance awaiting the
@@ -90,15 +95,16 @@ Deno.serve(async (req) => {
       case 'identity.verification_session.verified': {
         const session = event.data.object;
 
-        // verified_outputs is not included on the event payload -- it has to
-        // be expanded on a fresh retrieve. This is the only place the date of
-        // birth is ever seen, and it is turned into a boolean on the next line
-        // and then dropped: IDVerifyScreen promises Spot Check keeps no more
-        // than "your verified status and age".
-        const full = await stripe.identity.verificationSessions.retrieve(session.id, {
-          expand: ['verified_outputs'],
-        });
-        const adult = isAdult(full.verified_outputs?.dob);
+        // verified_outputs is not on the event payload; it has to be read
+        // with a fresh retrieve, by name and with the restricted results key
+        // (see retrieveVerifiedIsAdult). This is the only place the date of
+        // birth is ever seen, and it is reduced to a boolean there.
+        const adult = await retrieveVerifiedIsAdult(
+          (id, params, options) =>
+            stripe.identity.verificationSessions.retrieve(id, params, options),
+          session.id,
+          stripeIdentityResultsKey(),
+        );
 
         const { data: updated, error } = await db
           .from('identity_verifications')
