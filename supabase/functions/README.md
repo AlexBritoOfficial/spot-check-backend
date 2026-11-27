@@ -55,6 +55,7 @@ code but can never read or write a live key:
 ```sh
 cat > /tmp/stripe.env <<'EOF'
 STRIPE_SECRET_KEY=sk_test_...
+STRIPE_IDENTITY_RESULTS_KEY=rk_test_...
 STRIPE_WEBHOOK_SECRET=whsec_...
 STRIPE_WEBHOOK_SECRET_CONNECT=whsec_...
 EOF
@@ -71,6 +72,16 @@ Three things in that command are each a trap already hit:
 - **`--yes`.** Hosted changes prompt for confirmation, and the CLI accepts that confirmation _only_
   from this flag or `SUPABASE_YES` exported in the shell — never from a `.env` file. Omitting it is
   what made the CI functions deploy fail with "Confirmation required ... Nothing was changed".
+
+**`STRIPE_IDENTITY_RESULTS_KEY` is a restricted key, the only one.** The 18+ check needs the date
+of birth off the ID, and Stripe treats it as a sensitive result: it is returned only when
+`verified_outputs.dob` is expanded by name, and only to a restricted key — the standard secret key
+is refused ("To access sensitive verification results, configure a restricted API key"). Create it
+under Developers → API keys → **Create restricted key** with **Identity Verification Results** and
+**Recent Detailed Verification Results** set to **Read**, and nothing else. "Recent" means
+verifications from the last 48 hours, which is all the webhook needs. Without the key the
+`identity.verification_session.verified` webhook fails with a 500 (Stripe retries it) rather than
+saving an unknown age.
 
 The heredoc keeps both values out of shell history, which passing them as arguments would not.
 

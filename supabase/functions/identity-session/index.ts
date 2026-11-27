@@ -12,6 +12,7 @@
 import { stripe } from '../_shared/stripe.ts';
 import { adminClient, requireUser, Unauthorized } from '../_shared/supabase.ts';
 import { fail, json, preflight } from '../_shared/http.ts';
+import { identitySessionStep } from '../_shared/identity.ts';
 
 Deno.serve(async (req) => {
   const pre = preflight(req);
@@ -25,29 +26,23 @@ Deno.serve(async (req) => {
     // IDVerifyScreen can skip straight ahead on this.
     const { data: existing, error: readError } = await db
       .from('identity_verifications')
-      .select('stripe_verification_session_id, status')
+      .select('status, verified_is_adult')
       .eq('user_id', user.id)
       .maybeSingle();
     if (readError) throw readError;
 
-    if (existing?.status === 'verified') {
-      return json({ status: 'verified' });
-    }
-
-    // A session that is still answerable is reused rather than replaced, so a
-    // user who backgrounds the app mid-flow comes back to the same one.
-    if (existing && existing.status === 'processing') {
-      return json({ status: 'processing' });
-    }
+    // Done, or still being checked, unless the age came back unknown -- see
+    // identitySessionStep. A processing session is reused rather than
+    // replaced, so a user who backgrounds the app mid-flow comes back to it.
+    const step = identitySessionStep(existing);
+    if (step !== 'create') return json({ status: step });
 
     const session = await stripe.identity.verificationSessions.create({
       type: 'document',
-      // Stripe computes adulthood for us and we keep only the boolean. Asking
-      // for the DOB check here is what makes verified_outputs.dob populated at
-      // webhook time.
-      // A selfie match, so a stolen document alone does not verify. Date of
-      // birth comes back in verified_outputs from the document itself -- there
-      // is no separate DOB check to request.
+      // A selfie match, so a stolen document alone does not verify. The date
+      // of birth is read off the document itself -- there is no separate DOB
+      // check to request -- and the webhook fetches it with the restricted
+      // results key, keeping only whether it makes the user 18+.
       options: { document: { require_matching_selfie: true } },
       // The only link back from a webhook to a user. Stripe returns metadata
       // on the event, so the webhook never has to guess or look up by session.
@@ -56,7 +51,8 @@ Deno.serve(async (req) => {
 
     // Upsert, not insert: a previous `requires_input` or `canceled` attempt
     // reuses the row, which is what the table's one-row-per-user primary key
-    // requires. Status resets to the new session's.
+    // requires. Status resets to the new session's, and a verification whose
+    // age was unknown is cleared, so the row describes this attempt only.
     const { error: writeError } = await db
       .from('identity_verifications')
       .upsert({
@@ -64,6 +60,8 @@ Deno.serve(async (req) => {
         stripe_verification_session_id: session.id,
         status: session.status,
         last_error_code: null,
+        verified_is_adult: null,
+        verified_at: null,
       }, { onConflict: 'user_id' });
     if (writeError) throw writeError;
 

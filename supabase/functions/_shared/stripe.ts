@@ -27,6 +27,18 @@ export const stripe = new Stripe(requireEnv('STRIPE_SECRET_KEY'), {
   apiVersion: STRIPE_API_VERSION,
 });
 
+/**
+ * The restricted key that reads sensitive Identity results -- the document's
+ * date of birth, which the 18+ check needs. The standard secret key is refused
+ * these, so it is a key of its own, with only the "Identity Verification
+ * Results" and "Recent Detailed Verification Results" read permissions.
+ *
+ * Read on use rather than at import, so the other functions sharing this
+ * module still boot without it. A missing key fails the verified webhook with
+ * a 500, which Stripe retries, rather than saving an unknown age.
+ */
+export const stripeIdentityResultsKey = (): string => requireEnv('STRIPE_IDENTITY_RESULTS_KEY');
+
 // constructEventAsync needs a crypto provider that exists on the edge. Passed
 // explicitly rather than relying on the default, because the failure mode is a
 // webhook that rejects every signature as invalid.
